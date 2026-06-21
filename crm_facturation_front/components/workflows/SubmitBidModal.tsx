@@ -131,7 +131,7 @@ export function SubmitBidModal({
       const uploadedFiles = await uploadAttachedFiles();
       const technicalProposalFileUrl = uploadedFiles[0]?.url ?? null;
       const financialQuoteFileUrl = uploadedFiles[1]?.url ?? null;
-
+console.log("Submitting bid with data:", form.downPaymentPercentage)
       await onSubmit({
         rfpId: rfp?.id,
         referenceNumber: `BID-${Date.now()}`,

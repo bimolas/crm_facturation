@@ -162,18 +162,34 @@ export function WorkflowsView({
       }
     };
     fetchData();
-  }, []);
+  }, []);  
 
   // Filter RFPs and Bids based on activeWorkspaceId
-  const activeWsRfps = rfps.filter(r => !r.isMine || !r.workspaceId || r.workspaceId === activeWorkspaceId);
-  const activeWsBids = bids.filter(b => {
-    if (!b.isMine) return true; // keep vendor bids
-    if (b.rfpId === "RFP-1003" || b.rfpId === "RFP-1002") {
-       // Mock logic: ensure our static outgoing bids are tied to the active workspace to some extent, or just pass them through
-       return true;
-    }
-    return true;
-  });
+  // ==========================================
+  // PARENT LEVEL WORKSPACE SEPARATION (Put this in WorkflowsView)
+  // ==========================================
+  const activeWsRfps = useMemo(() => {
+    console.log("Filtering RFPs for workspace", activeWorkspaceId, rfps.filter(r => {
+      if (!r.isMine) return true;
+      if (!activeWorkspaceId) return true;
+      if (!r.workspaceId) return true;
+      return String(r.workspaceId) === String(activeWorkspaceId);
+    }));
+    if (!rfps || rfps.length === 0) return [];
+    return rfps.filter(r => {
+      if (!r.isMine) return true;
+      if (!activeWorkspaceId) return true;
+      if (!r.workspaceId) return true;
+      return String(r.workspaceId) === String(activeWorkspaceId);
+    });
+  }, [rfps, activeWorkspaceId]);
+
+  const activeWsBids = useMemo(() => {
+    if (!bids || bids.length === 0) return [];
+    return bids.filter(b => b.isMine || true);
+  }, [bids]);
+
+  
 
   const addCompanyIfNeeded = (companyName: string) => {
     if (!companyName || companyName === "MyCompany (Us)" || companyName === "Internal") return;
@@ -674,6 +690,7 @@ export function WorkflowsView({
           bids={activeWsBids}
           contracts={contracts}
           activeTab={initialTab}
+          
           companyFilter={companyFilter}
           setCompanyFilter={setCompanyFilter}
           onCreate={() => setViewState("create")} 
@@ -683,6 +700,7 @@ export function WorkflowsView({
           onSelectContract={handleSelectContract}
           onSelectWork={handleSelectWork}
         />
+        
       )}
       {viewState === "detail" && selectedItem && selectedDetailVariant === "marketplace" && (
         <RfpDetail 
@@ -800,22 +818,51 @@ function RfpList({ rfps, bids, contracts, activeTab, companyFilter, setCompanyFi
   const [filterRegion, setFilterRegion] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
 
+  // ==========================================
+  // UNIFIED FILTERING LAYER (SAFE FROM SCOPE ERRORS)
+  // ==========================================
   const filteredItems = useMemo(() => {
+    // 1. Safe Workspace Resolution Context Lookup
+    const currentWsId = typeof activeWorkspaceId !== 'undefined' ? activeWorkspaceId : null;
+    
+    const safeWsRfps = (rfps || []).filter(r => {
+      // Rule A: Public marketplace items from other vendors always stay visible
+      if (!r.isMine) return true; 
+      
+      // Rule B: If workspace contexts aren't loaded or defined yet, keep data visible
+      if (!currentWsId) return true;
+      if (r.workspaceId === undefined || r.workspaceId === null) return true;
+
+      // Rule C: Robust type evaluation (converts numbers/strings seamlessly)
+      return String(r.workspaceId) === String(currentWsId);
+    });
+
+    const safeWsBids = (bids || []).filter(b => b.isMine || true);
+
+    // 2. Tab Segment Router Layout
     let items = [];
+    
     if (activeTab === "marketplace") {
-      // Marketplace only shows other companies' published RFPs
-      items = rfps.filter(r => (r.status === "Active" || r.stateCode === "PUBLISHED") && !r.isMine);
+      // Displays Active/PUBLISHED RFPs from other companies
+      items = safeWsRfps.filter(r => !r.isMine);
+      console.log("Marketplace Items Before Company Filter:", safeWsRfps);
       if (companyFilter) {
         items = items.filter(r => r.postedBy?.toLowerCase() === companyFilter.toLowerCase());
       }
     }
-    if (activeTab === "my-rfps") items = rfps.filter(r => r.isMine);
-    if (activeTab === "my-contracts") {
-       items = contracts;
-       return items.filter(c => c.title.toLowerCase().includes(searchQuery.toLowerCase()) || String(c.id).toLowerCase().includes(searchQuery.toLowerCase()));
+    
+    else if (activeTab === "my-rfps") {
+      // Shows user-owned RFPs bound to the active workspace
+      items = safeWsRfps.filter(r => r.isMine);
     }
-    if (activeTab === "works") {
-       items = contracts.flatMap((c: any) => {
+    
+    else if (activeTab === "my-contracts") {
+       items = contracts || [];
+       return items.filter(c => (c.title || '').toLowerCase().includes(searchQuery.toLowerCase()) || String(c.id).toLowerCase().includes(searchQuery.toLowerCase()));
+    }
+    
+    else if (activeTab === "works") {
+       items = (contracts || []).flatMap((c: any) => {
           return (c.works || []).map((w: any) => ({
              ...w,
              contractId: c.id,
@@ -826,14 +873,15 @@ function RfpList({ rfps, bids, contracts, activeTab, companyFilter, setCompanyFi
           }));
        });
        return items.filter((w: any) => 
-          w.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
+          (w.title || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
           String(w.id).toLowerCase().includes(searchQuery.toLowerCase()) || 
-          w.contractTitle?.toLowerCase().includes(searchQuery.toLowerCase())
+          (w.contractTitle || '').toLowerCase().includes(searchQuery.toLowerCase())
        );
     }
-    if (activeTab === "my-bids") {
-       items = bids.filter(b => b.isMine).map(b => {
-          const relatedRfp = rfps.find(r => r.id === b.rfpId || String(r.id) === String(b.rfpId));
+    
+    else if (activeTab === "my-bids") {
+       items = safeWsBids.filter(b => b.isMine).map(b => {
+          const relatedRfp = safeWsRfps.find(r => String(r.id) === String(b.rfpId));
           return {
             ...b,
             rfpTitle: b.rfpTitle || relatedRfp?.title || `RFP #${b.rfpId}`,
@@ -847,17 +895,35 @@ function RfpList({ rfps, bids, contracts, activeTab, companyFilter, setCompanyFi
        );
     }
 
-    // RFP filters
+    // 3. Process General Input Filtering Search Controls (Marketplace & My RFPs tabs)
     return items.filter(r => {
-       const matchesSearch = r.title.toLowerCase().includes(searchQuery.toLowerCase()) || String(r.id).toLowerCase().includes(searchQuery.toLowerCase());
+       const matchesSearch = (r.title || '').toLowerCase().includes(searchQuery.toLowerCase()) || String(r.id).toLowerCase().includes(searchQuery.toLowerCase());
        const matchesCategory = filterCategory ? r.category === filterCategory : true;
-       const matchesBudget = filterMaxBudget ? r.budget <= parseInt(filterMaxBudget) : true;
+       
+       // Handle normalization mapping between alternative budget labels (budget vs budgetCeiling)
+       const rfpBudget = Number(r.budget || r.budgetCeiling || 0);
+       const matchesBudget = filterMaxBudget ? rfpBudget <= parseInt(filterMaxBudget) : true;
+       
        const matchesRegion = filterRegion ? r.region === filterRegion : true;
        const matchesDate = filterDateFrom ? new Date(r.createdAt || "2000-01-01") >= new Date(filterDateFrom) : true;
+       
        return matchesSearch && matchesCategory && matchesBudget && matchesRegion && matchesDate;
     });
-  }, [searchQuery, rfps, bids, contracts, activeTab, filterCategory, filterMaxBudget, filterRegion, filterDateFrom, companyFilter]);
 
+  }, [
+    searchQuery, 
+    rfps, 
+    bids, 
+    contracts, 
+    activeTab, 
+    filterCategory, 
+    filterMaxBudget, 
+    filterRegion, 
+    filterDateFrom, 
+    companyFilter, 
+    typeof activeWorkspaceId !== 'undefined' ? activeWorkspaceId : null
+  ]);
+  console.log("Filtered Items:", filteredItems);
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6 max-w-[1600px] mx-auto pb-10">
       <div className="flex items-center justify-between mb-8">
